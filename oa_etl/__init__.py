@@ -1,3 +1,5 @@
+"""Public package exports for the :mod:`oa_etl` library."""
+
 from __future__ import annotations
 
 __all__ = [

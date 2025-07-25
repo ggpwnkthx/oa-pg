@@ -1,3 +1,5 @@
+"""Top level orchestration of asynchronous ETL pipeline stages."""
+
 from __future__ import annotations
 
 import asyncio

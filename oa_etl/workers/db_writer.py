@@ -31,6 +31,7 @@ async def db_batch_writer(
     metrics: Metrics,
     config: Config,
 ) -> None:
+    """Flush accumulated rows from ``row_q`` into PostgreSQL in batches."""
     staging_cols = ADDRESS_HEADER + \
         METADATA_HEADER + ["geometry", "address_hash"]
     buffer: List[bytes] = []

@@ -1,3 +1,5 @@
+"""Parsing helpers that convert OA features into binary COPY rows."""
+
 from __future__ import annotations
 
 import io
@@ -9,10 +11,7 @@ import orjson
 from shapely.geometry import shape
 
 from oa_etl.clients.openaddresses import Job
-from oa_etl.addressing import (
-    ADDRESS_HEADER,
-    is_valid_address,
-)
+from oa_etl.addressing import is_valid_address
 from .hashing import compute_raw_hash_bytes
 
 logger = logging.getLogger(__name__)
@@ -26,13 +25,15 @@ def parse_lines_to_binary_rows(
     lines: List[str],
     job: Job,
 ) -> Tuple[List[bytes], int]:
+    """Return binary COPY rows and count from a list of GeoJSON lines."""
+
     rows: List[bytes] = []
     features_processed = 0
     first_hash_hex_logged = False
 
     for line in lines:
         try:
-            country, region, place = job.source_name.split("/")
+            _, region, place = job.source_name.split("/")
             feat = orjson.loads(line)
             geom = feat.get("geometry")
             props = feat.get("properties", {})

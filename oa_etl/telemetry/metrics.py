@@ -1,3 +1,5 @@
+"""Lightweight in-memory metrics collection utilities."""
+
 from __future__ import annotations
 
 import threading
@@ -8,6 +10,7 @@ from typing import Dict, List, Iterable, Tuple
 
 
 def _percentile(sorted_values: List[float], p: float) -> float:
+    """Return the ``p``th percentile value from a sorted list."""
     if not sorted_values:
         return float("nan")
     k = (len(sorted_values) - 1) * (p / 100.0)
@@ -21,10 +24,17 @@ def _percentile(sorted_values: List[float], p: float) -> float:
 
 
 def pct_summary(values: Iterable[float]) -> Dict[str, float]:
+    """Compute count and several percentiles from an iterable of values."""
     vals = sorted(v for v in values if v is not None)
     if not vals:
-        return {"count": 0, "min": float("nan"), "p50": float("nan"),
-                "p95": float("nan"), "p99": float("nan"), "max": float("nan")}
+        return {
+            "count": 0,
+            "min": float("nan"),
+            "p50": float("nan"),
+            "p95": float("nan"),
+            "p99": float("nan"),
+            "max": float("nan"),
+        }
     return {
         "count": len(vals),
         "min": vals[0],
@@ -37,6 +47,7 @@ def pct_summary(values: Iterable[float]) -> Dict[str, float]:
 
 @dataclass
 class Metrics:
+    """Thread-safe container for pipeline metrics."""
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     jobs_total: int = 0

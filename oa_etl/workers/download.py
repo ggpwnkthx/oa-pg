@@ -1,3 +1,5 @@
+"""Worker that downloads job archives from OpenAddresses."""
+
 from __future__ import annotations
 
 import asyncio

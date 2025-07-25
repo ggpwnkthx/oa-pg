@@ -1,3 +1,5 @@
+"""Async client for interacting with the OpenAddresses batch API."""
+
 from __future__ import annotations
 
 import asyncio
@@ -16,18 +18,23 @@ logger = logging.getLogger(__name__)
 
 @dataclass(slots=True)
 class Job:
+    """Metadata describing an OpenAddresses processing job."""
+
     id: str
     source_name: str
 
 
 @dataclass(slots=True)
 class DownloadResult:
+    """Outcome of a successful archive download."""
+
     path: Path
     bytes: int
     duration: float
 
 
 class OAAsyncClient:
+    """Minimal async wrapper around the OpenAddresses batch API."""
     def __init__(
         self,
         api_url: str = os.getenv(
@@ -113,6 +120,7 @@ class OAAsyncClient:
         return resp
 
     async def fetch_jobs(self, source: str, layer: str, timeout: float = 30.0) -> List[Job]:
+        """Return the list of available jobs for a given source and layer."""
         url = f"{self.api_url}/data"
         params = {"source": source, "layer": layer}
         resp = await self._request("GET", url, params=params, timeout=timeout)
@@ -133,6 +141,7 @@ class OAAsyncClient:
         timeout: float = 60.0,
         chunk_size: int = 8192,
     ) -> DownloadResult:
+        """Download a job archive and save it to ``dest``."""
         dest.parent.mkdir(parents=True, exist_ok=True)
         if dest.exists():
             size = dest.stat().st_size

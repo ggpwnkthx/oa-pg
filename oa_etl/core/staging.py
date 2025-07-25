@@ -1,3 +1,5 @@
+"""Functions for creating per-job staging tables."""
+
 from __future__ import annotations
 
 import hashlib
