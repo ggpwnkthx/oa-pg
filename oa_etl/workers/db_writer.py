@@ -49,87 +49,106 @@ async def db_batch_writer(
     buffer: List[bytes] = []
     done = False
 
-    async def _flush(rows: List[bytes]) -> None:
-        """COPY ``rows`` into PostgreSQL and perform deduplication inserts.
+    async def _flush(rows: List[bytes]) -> float:
+        """COPY ``rows`` into PostgreSQL and perform deduplication inserts."""
 
-        Parameters
-        ----------
-        rows:
-            List of binary encoded rows to copy.
-        """
         if not rows:
-            return
-        async with pool.connection() as conn, conn.transaction():
-            staging_tbl = "tmp_buffer_ingest"
-            await create_temp_staging_table(conn, staging_tbl)
-            await copy_batch_binary(
-                conn,
-                staging_tbl,
-                staging_cols,
-                rows,
-                metrics,
-                job_id="bulk_batch",
-                freeze=False,
-            )
+            return 0.0
 
-            addr_cols_sql = sql.SQL(", ").join(sql.Identifier(c)
+        logger.info("Flushing %d rows to database", len(rows))
+        loop = asyncio.get_running_loop()
+        conn_wait_start = loop.time()
+        async with pool.connection() as conn:
+            conn_wait = loop.time() - conn_wait_start
+            metrics.observe_stage("db_conn_acquire", conn_wait)
+            metrics.observe_db_wait(conn_wait)
+            if conn_wait > 0.5:
+                logger.warning(
+                    "DB writer waited %.3fs for a DB connection", conn_wait
+                )
+            async with conn.transaction():
+                start = perf_counter()
+
+                staging_tbl = "tmp_buffer_ingest"
+                await create_temp_staging_table(conn, staging_tbl)
+                await copy_batch_binary(
+                    conn,
+                    staging_tbl,
+                    staging_cols,
+                    rows,
+                    metrics,
+                    job_id="bulk_batch",
+                    freeze=False,
+                )
+
+                addr_cols_sql = sql.SQL(", ").join(sql.Identifier(c)
                                                for c in ADDRESS_HEADER)
-            addr_cols_with_hash_sql = sql.SQL(", ").join(
-                [*(sql.Identifier(c)
-                   for c in ADDRESS_HEADER), sql.Identifier("unique_hash")]
-            )
-
-            if config.dedup_strategy == "group_by":
-                dedup_sql = sql.SQL(
-                    """
-                    CREATE TEMP TABLE tmp_dedup ON COMMIT DROP AS
-                    SELECT *
-                      FROM {tmp}
-                     GROUP BY address_hash, {all_cols}
-                    """
-                ).format(
-                    tmp=sql.Identifier(staging_tbl),
-                    all_cols=sql.SQL(", ").join(sql.Identifier(c)
-                                                for c in staging_cols),
+                addr_cols_with_hash_sql = sql.SQL(", ").join(
+                    [*(sql.Identifier(c) for c in ADDRESS_HEADER),
+                     sql.Identifier("unique_hash")]
                 )
-            else:
-                dedup_sql = sql.SQL(
-                    """
-                    CREATE TEMP TABLE tmp_dedup ON COMMIT DROP AS
-                    SELECT DISTINCT ON (address_hash) *
-                      FROM {tmp}
-                     ORDER BY address_hash;
-                    """
-                ).format(tmp=sql.Identifier(staging_tbl))
 
-            async with conn.cursor() as cur:
-                await cur.execute(dedup_sql)
-                await cur.execute(
-                    sql.SQL(
+                if config.dedup_strategy == "group_by":
+                    dedup_sql = sql.SQL(
                         """
-                        INSERT INTO addresses ({cols_hash})
-                        SELECT {cols}, t.address_hash
-                          FROM tmp_dedup AS t
-                        ON CONFLICT (unique_hash) DO NOTHING
+                        CREATE TEMP TABLE tmp_dedup ON COMMIT DROP AS
+                        SELECT *
+                          FROM {tmp}
+                         GROUP BY address_hash, {all_cols}
                         """
-                    ).format(cols_hash=addr_cols_with_hash_sql, cols=addr_cols_sql)
-                )
-                await cur.execute(
-                    sql.SQL(
-                        """
-                        INSERT INTO openaddresses (
-                            address_uuid, job_id, source_name,
-                            hash, canonical, geometry
-                        )
-                        SELECT a.uuid, t.job_id, t.source_name,
-                               t.hash, t.canonical, t.geometry
-                          FROM tmp_dedup AS t
-                          JOIN addresses AS a
-                            ON a.unique_hash = t.address_hash
-                        ON CONFLICT (job_id, hash, geometry) DO NOTHING
-                        """
+                    ).format(
+                        tmp=sql.Identifier(staging_tbl),
+                        all_cols=sql.SQL(", ").join(
+                            sql.Identifier(c) for c in staging_cols
+                        ),
                     )
-                )
+                else:
+                    dedup_sql = sql.SQL(
+                        """
+                        CREATE TEMP TABLE tmp_dedup ON COMMIT DROP AS
+                        SELECT DISTINCT ON (address_hash) *
+                          FROM {tmp}
+                         ORDER BY address_hash;
+                        """
+                    ).format(tmp=sql.Identifier(staging_tbl))
+
+                async with conn.cursor() as cur:
+                    await cur.execute(dedup_sql)
+                    await cur.execute(
+                        sql.SQL(
+                            """
+                            INSERT INTO addresses ({cols_hash})
+                            SELECT {cols}, t.address_hash
+                              FROM tmp_dedup AS t
+                            ON CONFLICT (unique_hash) DO NOTHING
+                            """
+                        ).format(
+                            cols_hash=addr_cols_with_hash_sql,
+                            cols=addr_cols_sql,
+                        )
+                    )
+                    await cur.execute(
+                        sql.SQL(
+                            """
+                            INSERT INTO openaddresses (
+                                address_uuid, job_id, source_name,
+                                hash, canonical, geometry
+                            )
+                            SELECT a.uuid, t.job_id, t.source_name,
+                                   t.hash, t.canonical, t.geometry
+                              FROM tmp_dedup AS t
+                              JOIN addresses AS a
+                                ON a.unique_hash = t.address_hash
+                            ON CONFLICT (job_id, hash, geometry) DO NOTHING
+                            """
+                        )
+                    )
+
+                flush_dur = perf_counter() - start
+
+        metrics.observe_stage("db_writer_flush", flush_dur)
+        logger.info("Flush completed in %.3f s", flush_dur)
+        return flush_dur
 
     while not done:
         try:
@@ -141,10 +160,13 @@ async def db_batch_writer(
             row_q.task_done()
 
             if len(buffer) >= BATCH_ROWS_TARGET or (done and buffer):
+                logger.debug(
+                    "Triggering flush of %d rows (done=%s)", len(buffer), done
+                )
                 start = perf_counter()
-                await _flush(buffer)
-                duration = perf_counter() - start
-                metrics.observe_stage("copy", duration)
+                duration = await _flush(buffer)
+                total = perf_counter() - start
+                metrics.observe_stage("batch_flush", total)
                 buffer.clear()
         except Exception:
             logger.exception("DB batch-writer crashed; continuing")
