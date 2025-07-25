@@ -20,6 +20,13 @@ class AdjustableLimiter:
     """
 
     def __init__(self, initial: int) -> None:
+        """Initialize the limiter.
+
+        Parameters
+        ----------
+        initial:
+            Starting concurrency value. Must be non-negative.
+        """
         if initial < 0:
             raise ValueError("initial must be >= 0")
         self._limit = initial
@@ -27,6 +34,14 @@ class AdjustableLimiter:
         self._cond = asyncio.Condition()
 
     async def set_limit(self, new_limit: int) -> None:
+        """Set a new concurrency limit.
+
+        Parameters
+        ----------
+        new_limit:
+            The desired maximum number of concurrent tasks. Values below
+            zero are treated as zero.
+        """
         if new_limit < 0:
             new_limit = 0
         async with self._cond:
@@ -34,12 +49,18 @@ class AdjustableLimiter:
             self._cond.notify_all()
 
     async def acquire(self) -> None:
+        """Acquire a slot when capacity is available.
+
+        This coroutine waits until fewer than ``limit`` tasks are active and
+        then increments the active count.
+        """
         async with self._cond:
             while self._active >= self._limit:
                 await self._cond.wait()
             self._active += 1
 
     async def release(self) -> None:
+        """Release a previously acquired slot and wake one waiter."""
         async with self._cond:
             self._active -= 1
             if self._active < 0:
@@ -48,15 +69,44 @@ class AdjustableLimiter:
 
     @property
     def limit(self) -> int:
+        """Return the currently enforced concurrency limit."""
         return self._limit
 
     @property
     def active(self) -> int:
+        """Return the number of tasks that have acquired the limiter."""
         return self._active
 
 
 @dataclass
 class AutoscaleConfig:
+    """Parameters controlling runtime autoscaling.
+
+    Attributes
+    ----------
+    dl_min, dl_max:
+        Lower and upper bounds on concurrent download workers.
+    db_min, db_max:
+        Lower and upper bounds on concurrent DB workers.
+    dl_initial, db_initial:
+        Starting concurrency values.
+    backlog_high, backlog_low:
+        Thresholds on the processing queue size used to detect "hot" or
+        "cold" conditions.
+    db_wait_p95_high, db_wait_p95_low:
+        High/low water marks for 95th percentile DB wait time.
+    dl_inc, dl_dec, db_inc, db_dec:
+        Step sizes applied when scaling up or down.
+    interval_sec:
+        Period between control loop iterations.
+    hot_hysteresis, cold_hysteresis:
+        Number of consecutive hot/cold intervals before acting.
+    backpressure_dbwait_p95_high, backpressure_dbwait_p95_low:
+        DB wait thresholds for pausing/resuming enqueueing.
+    backpressure_require_full_pool:
+        Whether backpressure requires the DB pool to be full before
+        engaging.
+    """
     dl_min: int
     dl_max: int
     db_min: int
@@ -101,6 +151,28 @@ class Autoscaler:
         db_pool_process_max: int,
         enqueue_gate: EnqueueGate,
     ):
+        """Create a new :class:`Autoscaler` instance.
+
+        Parameters
+        ----------
+        cfg:
+            Runtime tuning parameters.
+        proc_q:
+            Queue from which the backlog size is observed.
+        dl_limiter:
+            Concurrency limiter controlling downloader workers.
+        db_limiter:
+            Concurrency limiter controlling DB workers.
+        metrics:
+            Metrics object providing access to DB wait statistics.
+        stop_event:
+            When set, signals the autoscaler to terminate.
+        db_pool_process_max:
+            Maximum DB concurrency allowed by the process pool.
+        enqueue_gate:
+            Gate used to pause or resume enqueueing when backpressure is
+            triggered.
+        """
         self.cfg = cfg
         self.proc_q = proc_q
         self.dl_limiter = dl_limiter
@@ -114,6 +186,12 @@ class Autoscaler:
         self._cold_ticks = 0
 
     async def run(self) -> None:
+        """Run the autoscaling control loop.
+
+        Periodically adjusts the concurrency limits for downloader and database
+        workers using metrics from ``proc_q`` and ``metrics``. The loop
+        continues until ``stop_event`` is set.
+        """
         await self.dl_limiter.set_limit(max(self.cfg.dl_min, self.cfg.dl_initial))
         # clamp initial DB concurrency
         await self.db_limiter.set_limit(

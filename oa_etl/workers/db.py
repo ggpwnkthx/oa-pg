@@ -53,6 +53,11 @@ async def db_worker(
         metrics.inc("jobs_total", 1)
 
         async def _process_job() -> None:
+            """Process a single job within a transaction.
+
+            Executes :func:`process_job` while capturing connection wait time
+            metrics and running inside ``pool.connection()``.
+            """
             conn_wait_start = loop.time()
             async with pool.connection(timeout=db_conn_timeout) as conn:
                 conn_wait = loop.time() - conn_wait_start

@@ -22,6 +22,14 @@ logger = logging.getLogger(__name__)
 
 
 async def run_pipeline(config: Config | None = None) -> Tuple[List[Any], Metrics]:
+    """Execute the full ETL pipeline and return results and metrics.
+
+    Parameters
+    ----------
+    config:
+        Optional :class:`Config` instance. If ``None``, environment variables
+        are loaded via :func:`initialize_environment`.
+    """
     if config is None:
         config = await initialize_environment()
 

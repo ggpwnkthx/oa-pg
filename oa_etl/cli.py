@@ -9,6 +9,7 @@ from oa_etl.pipeline import run_pipeline
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Return the argument parser for the command line interface."""
     p = argparse.ArgumentParser(description="OpenAddresses async ETL pipeline")
     p.add_argument(
         "--log-level",
@@ -19,6 +20,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 async def main() -> None:
+    """Run the ETL pipeline using command line arguments."""
     args = build_parser().parse_args()
     configure_logging(args.log_level)
 

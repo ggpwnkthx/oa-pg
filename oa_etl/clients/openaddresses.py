@@ -50,6 +50,25 @@ class OAAsyncClient:
         request_timeout: float = 30.0,
         max_connections: int = 10,
     ):
+        """Create a new client configured for the OpenAddresses batch API.
+
+        Parameters
+        ----------
+        api_url:
+            Base URL of the batch API.
+        download_url:
+            Template URL for job archive downloads.
+        token:
+            Optional bearer token to use instead of username/password.
+        username, password:
+            Credentials used when obtaining a token.
+        login_timeout:
+            Timeout in seconds for the login request.
+        request_timeout:
+            Timeout applied to normal API requests.
+        max_connections:
+            Maximum number of concurrent HTTP connections.
+        """
         self.api_url = api_url.rstrip("/")
         self.download_url = download_url
         self.username = username
@@ -64,6 +83,12 @@ class OAAsyncClient:
         self._auth_lock = asyncio.Lock()
 
     async def __aenter__(self) -> "OAAsyncClient":
+        """Enter the async context manager.
+
+        Ensures the HTTP client exists and performs authentication if
+        credentials are available. Returns ``self`` so the client can be used
+        within the ``async with`` block.
+        """
         await self._ensure_client()
         if self.token and self._client:
             self._client.headers.update(
@@ -75,22 +100,26 @@ class OAAsyncClient:
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
+        """Close the HTTP client when leaving the context manager."""
         if self._client:
             await self._client.aclose()
             self._client = None
 
     async def _ensure_client(self) -> None:
+        """Instantiate the underlying :class:`httpx.AsyncClient` if missing."""
         if self._client is None:
             self._client = httpx.AsyncClient(
                 timeout=self._timeout, limits=self._limits)
 
     def _require_client(self) -> httpx.AsyncClient:
+        """Return the initialized HTTP client or raise ``RuntimeError``."""
         if self._client is None:
             raise RuntimeError(
                 "Client not initialized; use 'async with OAAsyncClient()'")
         return self._client
 
     async def _login(self) -> None:
+        """Authenticate using stored credentials and store the new token."""
         if not (self.username and self.password):
             raise RuntimeError("Username/password required")
         async with self._auth_lock:
@@ -111,6 +140,17 @@ class OAAsyncClient:
             client.headers.update({"Authorization": f"Bearer {self.token}"})
 
     async def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
+        """Perform an HTTP request with automatic re-authentication.
+
+        Parameters
+        ----------
+        method:
+            HTTP method such as ``"GET"`` or ``"POST"``.
+        url:
+            Fully qualified request URL.
+        **kwargs:
+            Passed directly to :func:`httpx.AsyncClient.request`.
+        """
         client = self._require_client()
         resp = await client.request(method, url, **kwargs)
         if resp.status_code == 401 and self.username and self.password:
@@ -120,7 +160,17 @@ class OAAsyncClient:
         return resp
 
     async def fetch_jobs(self, source: str, layer: str, timeout: float = 30.0) -> List[Job]:
-        """Return the list of available jobs for a given source and layer."""
+        """Return the list of available jobs for a given source and layer.
+
+        Parameters
+        ----------
+        source:
+            Data source identifier (e.g. ``us/ca``).
+        layer:
+            Layer name such as ``addresses``.
+        timeout:
+            Request timeout in seconds.
+        """
         url = f"{self.api_url}/data"
         params = {"source": source, "layer": layer}
         resp = await self._request("GET", url, params=params, timeout=timeout)
@@ -141,7 +191,19 @@ class OAAsyncClient:
         timeout: float = 60.0,
         chunk_size: int = 8192,
     ) -> DownloadResult:
-        """Download a job archive and save it to ``dest``."""
+        """Download a job archive and save it to ``dest``.
+
+        Parameters
+        ----------
+        job_id:
+            Identifier of the job to download.
+        dest:
+            Destination file path for the archive.
+        timeout:
+            Maximum seconds to wait for the entire download.
+        chunk_size:
+            Size of chunks read from the network.
+        """
         dest.parent.mkdir(parents=True, exist_ok=True)
         if dest.exists():
             size = dest.stat().st_size

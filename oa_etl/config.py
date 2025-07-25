@@ -72,6 +72,12 @@ def _libpq_supports_pipeline() -> bool:
 
 
 async def initialize_environment() -> Config:
+    """Load environment variables and build a :class:`Config` instance.
+
+    Environment variables control concurrency settings, database connection
+    information, autoscaler thresholds and other runtime behavior. This helper
+    reads them all and returns a populated :class:`Config` object.
+    """
     load_dotenv()
 
     # Base concurrency knobs (max workers == number of tasks created)
