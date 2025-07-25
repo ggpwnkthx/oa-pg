@@ -1,21 +1,21 @@
 ###############################################################################
-#  Python .gitignore – keeps __pycache__ and other Python‑specific cruft out  #
+#  Python .gitignore – keeps __pycache__ and other Python-specific cruft out  #
 ###############################################################################
 
 # -----------------------------------------------------------------------------
-# 1. Byte‑code & cache files
+# 1. Byte-code & cache files
 # -----------------------------------------------------------------------------
 __pycache__/        # ignore any folder named “__pycache__” at any depth
 *.py[cod]           # *.pyc, *.pyo, *.pyd
-*$py.class          # Jython‑style compiled classes
+*$py.class          # Jython-style compiled classes
 
 # -----------------------------------------------------------------------------
-# 2. Virtual‑environment directories
+# 2. Virtual-environment directories
 # -----------------------------------------------------------------------------
 venv/
 env/
 .venv/
-.python‑env/
+.python-env/
 
 # -----------------------------------------------------------------------------
 # 3. Packaging / build artefacts
