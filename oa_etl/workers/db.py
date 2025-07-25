@@ -1,3 +1,5 @@
+"""Worker responsible for database interactions."""
+
 from __future__ import annotations
 
 import asyncio
@@ -32,6 +34,7 @@ async def db_worker(
     limiter: AdjustableLimiter,
     config: Config,
 ) -> None:
+    """Consume parsed jobs from ``proc_q`` and write them to PostgreSQL."""
     loop = asyncio.get_running_loop()
 
     while True:

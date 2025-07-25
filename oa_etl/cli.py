@@ -1,3 +1,5 @@
+"""Command line interface for running the ETL pipeline."""
+
 from __future__ import annotations
 
 import argparse

@@ -1,4 +1,4 @@
-# oa_etl/core/process.py
+"""High level job processing routine used by DB workers."""
 
 from __future__ import annotations
 

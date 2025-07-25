@@ -1,3 +1,5 @@
+"""Runtime autoscaling utilities for managing worker concurrency."""
+
 from __future__ import annotations
 
 import asyncio

@@ -1,3 +1,5 @@
+"""Miscellaneous constants shared across the ETL workers."""
+
 from __future__ import annotations
 
 # ──────────────────────────────────────────────────────────────────────────────

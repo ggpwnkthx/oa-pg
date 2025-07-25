@@ -1,3 +1,5 @@
+"""Generic exponential backoff retry helper."""
+
 from __future__ import annotations
 
 import asyncio

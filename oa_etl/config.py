@@ -1,3 +1,5 @@
+"""Environment-based configuration loading for the pipeline."""
+
 from __future__ import annotations
 
 import os
@@ -15,6 +17,7 @@ DedupStrategy = Literal["distinct_on", "group_by"]
 
 @dataclass
 class Config:
+    """Configuration values derived from environment variables."""
     # OA / HTTP
     source: str
     layer: str

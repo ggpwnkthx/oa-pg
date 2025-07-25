@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
-from typing import Any, List, Tuple
+from typing import List, Tuple
 
 from oa_etl.clients.openaddresses import Job, DownloadResult
 from oa_etl.core.io import chunked_lines
@@ -23,10 +23,11 @@ logger = logging.getLogger(__name__)
 
 async def parse_worker(
     wid: int,
-    parse_q: asyncio.Queue[Any],
-    row_q: asyncio.Queue[Any],
+    parse_q: asyncio.Queue[Tuple[Job, DownloadResult]],
+    row_q: asyncio.Queue[List[bytes]],
     metrics: Metrics,
 ) -> None:
+    """Parse downloaded archives into COPY-ready binary rows."""
     while True:
         item = await parse_q.get()
         if item is STOP_PARSE:

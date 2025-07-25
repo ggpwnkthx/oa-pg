@@ -1,6 +1,7 @@
+"""Address validation helpers for OpenAddresses processing."""
+
 from __future__ import annotations
 
-import json
 import re
 import logging
 from typing import Any
@@ -110,16 +111,3 @@ def is_valid_address(props: dict[str, Any]) -> dict[str, str] | None:
     except Exception:
         return None
 
-
-def to_csv_cell(value: Any) -> str | None:
-    """Efficiently serialize any JSON-serializable Python value to a CSV-compatible string."""
-    if value is None or value == "":
-        return None
-    if isinstance(value, str):
-        esc = value.replace('"', '""')
-        if any(c in esc for c in [",", "\n", '"']):
-            return f'"{esc}"'
-        return esc
-    if isinstance(value, (dict, list)):
-        return f'"{json.dumps(value, separators=(",", ":"))}"'
-    return str(value)

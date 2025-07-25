@@ -1,3 +1,5 @@
+"""Building blocks for parsing, staging and processing job data."""
+
 from __future__ import annotations
 
 from .retry import retry_logic
