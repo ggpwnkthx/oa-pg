@@ -198,6 +198,13 @@ async def process_job(
     step_start = perf_counter()
 
     async def _ddl_and_inserts(cur: psycopg.AsyncCursor) -> None:
+        """Run the deduplication CTAS and final INSERT statements.
+
+        Parameters
+        ----------
+        cur:
+            Active database cursor used to execute the statements.
+        """
         await cur.execute(dedup_sql)
         await cur.execute(
             sql.SQL(

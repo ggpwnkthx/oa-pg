@@ -46,6 +46,19 @@ async def retry_logic(
     *args: Any,
     **kwargs: Any
 ) -> Any:
+    """Execute ``func`` with retries using exponential backoff.
+
+    Parameters
+    ----------
+    func:
+        Asynchronous callable to execute.
+    max_retries:
+        Maximum number of retry attempts on failure.
+    backoff_factor:
+        Base factor for exponential backoff between retries.
+    *args, **kwargs:
+        Positional and keyword arguments passed to ``func``.
+    """
     retries = 0
 
     retriable = (

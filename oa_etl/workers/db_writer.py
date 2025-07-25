@@ -31,13 +31,32 @@ async def db_batch_writer(
     metrics: Metrics,
     config: Config,
 ) -> None:
-    """Flush accumulated rows from ``row_q`` into PostgreSQL in batches."""
+    """Flush accumulated rows from ``row_q`` into PostgreSQL in batches.
+
+    Parameters
+    ----------
+    row_q:
+        Queue containing encoded rows ready to be copied into the database.
+    pool:
+        Connection pool used to obtain PostgreSQL connections.
+    metrics:
+        Metrics object used to record COPY performance.
+    config:
+        Global configuration for deduplication and COPY behavior.
+    """
     staging_cols = ADDRESS_HEADER + \
         METADATA_HEADER + ["geometry", "address_hash"]
     buffer: List[bytes] = []
     done = False
 
     async def _flush(rows: List[bytes]) -> None:
+        """COPY ``rows`` into PostgreSQL and perform deduplication inserts.
+
+        Parameters
+        ----------
+        rows:
+            List of binary encoded rows to copy.
+        """
         if not rows:
             return
         async with pool.connection() as conn, conn.transaction():

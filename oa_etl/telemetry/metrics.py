@@ -75,41 +75,102 @@ class Metrics:
     errors_by_type: Counter[str] = field(default_factory=Counter)
 
     def inc(self, attr: str, value: int = 1) -> None:
+        """Increment the given numeric metric attribute.
+
+        Parameters
+        ----------
+        attr:
+            Name of the integer attribute to increment.
+        value:
+            Amount to add (default ``1``).
+        """
         with self.lock:
             setattr(self, attr, getattr(self, attr) + value)
 
     def add_bytes(self, n: int) -> None:
+        """Add ``n`` bytes to the download counter.
+
+        Parameters
+        ----------
+        n:
+            Number of bytes downloaded.
+        """
         with self.lock:
             self.bytes_downloaded += n
 
     def add_features(self, n: int) -> None:
+        """Record ``n`` processed features.
+
+        Parameters
+        ----------
+        n:
+            Number of features processed for the current job.
+        """
         with self.lock:
             self.features_total += n
             if n == 0:
                 self.jobs_zero_features += 1
 
     def observe_stage(self, stage: str, duration: float) -> None:
+        """Record a stage duration in seconds.
+
+        Parameters
+        ----------
+        stage:
+            Stage name such as ``download`` or ``parse``.
+        duration:
+            Elapsed time in seconds for the stage.
+        """
         with self.lock:
             self.stage_durations[stage].append(duration)
 
     def observe_copy_rps(self, rps: float) -> None:
+        """Record COPY throughput measured in rows per second.
+
+        Parameters
+        ----------
+        rps:
+            Rows per second achieved by the COPY operation.
+        """
         with self.lock:
             self.copy_rows_per_sec.append(rps)
 
     def observe_db_wait(self, wait: float) -> None:
+        """Record the time waited for a database connection.
+
+        Parameters
+        ----------
+        wait:
+            Seconds spent waiting for a pooled connection.
+        """
         with self.lock:
             self.db_wait_seconds.append(wait)
 
     def inc_lazy_skipped(self, seconds: float) -> None:
+        """Increment lazy-skip counters by one job and ``seconds`` elapsed.
+
+        Parameters
+        ----------
+        seconds:
+            Amount of job time skipped due to lazy mode.
+        """
         with self.lock:
             self.lazy_skipped_jobs_total += 1
             self.lazy_skipped_jobs_seconds_sum += seconds
 
     def record_error(self, exc: BaseException) -> None:
+        """Classify and count a raised exception.
+
+        Parameters
+        ----------
+        exc:
+            Exception instance to classify.
+        """
         with self.lock:
             self.errors_by_type[type(exc).__name__] += 1
 
     def summary(self) -> Tuple[str, Dict]:
+        """Return a human readable metrics summary and structured data."""
         with self.lock:
             stage_stats = {
                 stage: pct_summary(durations)
@@ -182,6 +243,15 @@ class Metrics:
         return "\n".join(lines), res
 
     def stage_percentile(self, stage: str, p: float) -> float:
+        """Return the ``p``th percentile for durations of ``stage``.
+
+        Parameters
+        ----------
+        stage:
+            Stage name whose timing data should be queried.
+        p:
+            Percentile to compute, expressed between 0 and 100.
+        """
         with self.lock:
             vals = self.stage_durations.get(stage, [])
             if not vals:
