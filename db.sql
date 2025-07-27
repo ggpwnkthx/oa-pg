@@ -108,7 +108,10 @@ CREATE TABLE openaddresses (
     hash           TEXT,
     canonical      TEXT,
 
-    geometry       GEOMETRY (Point, 4326),
+    -- Geometry values from OpenAddresses may be any geometry type, not just
+    -- ``POINT``.  Use a general ``GEOMETRY`` column while keeping the SRID of
+    -- 4326 which matches the source data.
+    geometry       GEOMETRY (Geometry, 4326),
 
     CONSTRAINT unique_openaddresses_record
         UNIQUE (job_id, hash, geometry)
