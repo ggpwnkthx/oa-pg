@@ -42,7 +42,10 @@ async def create_temp_staging_table(
         column_defs.append(sql.SQL("{} TEXT").format(sql.Identifier(col)))
     for col in METADATA_HEADER:
         column_defs.append(sql.SQL("{} TEXT").format(sql.Identifier(col)))
-    column_defs.append(sql.SQL("geometry GEOMETRY(Point, 4326)"))
+    # Geometry can be any valid type, so avoid constraining to only ``POINT``
+    # in the staging table. Keep the SRID of 4326 which matches the source
+    # data used throughout the pipeline.
+    column_defs.append(sql.SQL("geometry GEOMETRY(Geometry, 4326)"))
     column_defs.append(sql.SQL("address_hash BYTEA"))
 
     create_table_q = sql.SQL(
