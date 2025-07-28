@@ -1,6 +1,7 @@
 # ETL & DB
 psycopg                  # psycopg3 driver for PostgreSQL
 psycopg[pool]
+pyarrow
 
 # Environment
 aiofiles

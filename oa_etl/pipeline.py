@@ -17,6 +17,7 @@ from oa_etl.constants import STOP_DOWNLOAD, STOP_PARSE, STOP_BATCH
 from oa_etl.workers.download import download_worker
 from oa_etl.workers.parse import parse_worker
 from oa_etl.workers.db_writer import db_batch_writer
+from oa_etl.workers.arrow_writer import arrow_batch_writer
 
 
 async def _fetch_existing_job_ids(pool: psycopg_pool.AsyncConnectionPool) -> Set[str]:
@@ -55,20 +56,30 @@ async def run_pipeline(config: Config | None = None) -> Tuple[List[Any], Metrics
     enqueue_gate = EnqueueGate(initially_open=True)
     results: List[Any] = []
 
-    pool = psycopg_pool.AsyncConnectionPool(
-        config.dsn,
-        min_size=config.db_pool_min,
-        max_size=max(2, config.db_pool_min + 1),
-        timeout=config.db_conn_timeout,
-    )
+    pool: psycopg_pool.AsyncConnectionPool | None = None
+    if not config.write_arrow:
+        pool = psycopg_pool.AsyncConnectionPool(
+            config.dsn,
+            min_size=config.db_pool_min,
+            max_size=max(2, config.db_pool_min + 1),
+            timeout=config.db_conn_timeout,
+        )
+
+    if pool is not None:
+        pool_cm = pool
+    else:
+        from contextlib import nullcontext
+        pool_cm = nullcontext()
 
     async with OAAsyncClient(
         max_connections=config.http_max,
         login_timeout=config.login_timeout,
         request_timeout=config.req_timeout,
-    ) as client, pool:
+    ) as client, pool_cm:
 
-        existing_ids = await _fetch_existing_job_ids(pool)
+        existing_ids: Set[str] = set()
+        if pool is not None:
+            existing_ids = await _fetch_existing_job_ids(pool)
         all_jobs: List[Job] = await client.fetch_jobs(config.source, config.layer)
         jobs = [j for j in all_jobs if j.id not in existing_ids]
         logger.info(
@@ -103,10 +114,16 @@ async def run_pipeline(config: Config | None = None) -> Tuple[List[Any], Metrics
             for i in range(max(4, config.db_workers_max))
         ]
 
-        writer_task = asyncio.create_task(
-            db_batch_writer(row_q, pool, metrics, config),
-            name="db-batch-writer",
-        )
+        if config.write_arrow:
+            writer_task = asyncio.create_task(
+                arrow_batch_writer(row_q, config.arrow_path, metrics),
+                name="arrow-batch-writer",
+            )
+        else:
+            writer_task = asyncio.create_task(
+                db_batch_writer(row_q, pool, metrics, config),
+                name="db-batch-writer",
+            )
 
         # ─── wait on pipeline stages ─────────────────────────
         await jobs_q.join()

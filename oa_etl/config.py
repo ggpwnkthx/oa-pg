@@ -57,6 +57,10 @@ class Config:
     # Psycopg pipeline
     pipeline_mode: bool
 
+    # Arrow output
+    write_arrow: bool
+    arrow_path: Path
+
 
 def _libpq_supports_pipeline() -> bool:
     """
@@ -162,10 +166,14 @@ async def initialize_environment() -> Config:
     pipeline_mode_env = bool(int(os.getenv("DB_PIPELINE_MODE", "0")))
     pipeline_mode = pipeline_mode_env and _libpq_supports_pipeline()
 
+    dest_dir = Path(os.getenv("OA_DEST_DIR", "/tmp/oa_jobs"))
+    write_arrow = bool(int(os.getenv("OA_WRITE_ARROW", "0")))
+    arrow_path = Path(os.getenv("OA_ARROW_PATH", str(dest_dir / "addresses.arrow")))
+
     return Config(
         source=os.getenv("OA_SOURCE", "us/"),
         layer=os.getenv("OA_LAYER", "addresses"),
-        dest_dir=Path(os.getenv("OA_DEST_DIR", "/tmp/oa_jobs")),
+        dest_dir=dest_dir,
         http_max=http_max,
         login_timeout=float(os.getenv("OA_LOGIN_TIMEOUT", "30")),
         req_timeout=float(os.getenv("OA_REQ_TIMEOUT", "30")),
@@ -193,4 +201,6 @@ async def initialize_environment() -> Config:
         create_temp_hash_index=create_temp_hash_index,
         geom_hash=geom_hash,
         pipeline_mode=pipeline_mode,
+        write_arrow=write_arrow,
+        arrow_path=arrow_path,
     )
