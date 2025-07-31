@@ -41,6 +41,11 @@ def build_cli() -> argparse.ArgumentParser:
     oa.add_argument("--token", default=None, help="OA bearer token")
     oa.add_argument("--concurrency", type=int, default=16,
                     help="Normalization threads")
+    oa.add_argument(
+        "--no-batch-dedupe",
+        action="store_true",
+        help="Disable per-batch deduping of normalized rows (enabled by default).",
+    )
 
     return p
 
@@ -69,6 +74,7 @@ async def main_async(args: argparse.Namespace) -> None:
         out_path=args.out,
         concurrency=args.concurrency,
         status_interval=args.status_interval,
+        batch_dedupe=not args.no_batch_dedupe,
     )
     await pipeline.run()
 

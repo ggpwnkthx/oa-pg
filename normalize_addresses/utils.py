@@ -1,6 +1,6 @@
 import re
 import unicodedata
-from typing import Optional, Sequence, Tuple, List, Dict, Any
+from typing import Optional, Sequence, Tuple, List, Dict
 from postal.parser import parse_address
 
 from normalize_addresses.models import InputAddress, NormalizedRecord
@@ -115,7 +115,7 @@ def _map_libpostal_components(
     Returns a dict whose values may be None.
     """
     d: Dict[str, str] = {}
-    for label, value in pairs:
+    for value, label in pairs:
         d[label] = _clean_ws(value.lower())
 
     out: Dict[str, Optional[str]] = {}
@@ -215,12 +215,17 @@ def build_canonical_string(
 def normalize_one(addr: InputAddress) -> NormalizedRecord:
     """
     Parse with libpostal, map to schema, back-fill region/locality, then build canonical string.
+    (Canonical string is used internally for dedupe; it is not persisted.)
     """
     # avoid top-level import cycle
     from .models import NormalizedRecord  # noqa: F811
 
     # 1) run libpostal
-    parsed_pairs = parse_address(addr.address_raw)
+    parsed_pairs = parse_address(
+        address=addr.address_raw,
+        language=addr.language_code,
+        country=addr.country_code,
+    )
     mapped = _map_libpostal_components(parsed_pairs)
 
     # 2) back-fill admin_area_1
@@ -236,9 +241,8 @@ def normalize_one(addr: InputAddress) -> NormalizedRecord:
         if raw_city:
             mapped["locality"] = _clean_ws(str(raw_city)).title()
 
-    # 4) build canonical
+    # 4) country code normalized
     cc = (addr.country_code or "").strip().upper()
-    canonical = build_canonical_string(mapped, cc or None)
 
     return NormalizedRecord(
         country_code=cc,
@@ -250,6 +254,4 @@ def normalize_one(addr: InputAddress) -> NormalizedRecord:
         thoroughfare=mapped.get("thoroughfare"),
         premise=mapped.get("premise"),
         sub_premise=mapped.get("sub_premise"),
-        address_raw=_clean_ws(addr.address_raw),
-        address_norm=canonical,
     )

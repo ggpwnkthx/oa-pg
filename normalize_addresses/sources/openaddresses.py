@@ -6,6 +6,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 import asyncio
 import concurrent.futures
 import zlib
+import random
 
 import aiofiles  # type: ignore
 import httpx     # type: ignore
@@ -49,6 +50,7 @@ class OAAsyncClient:
         login_timeout: float = 30.0,
         request_timeout: float = 30.0,
         max_connections: int = 10,
+        http2: bool = True,
     ):
         self.api_url = api_url.rstrip("/")
         self.download_url = download_url
@@ -59,6 +61,7 @@ class OAAsyncClient:
         self._limits = httpx.Limits(
             max_connections=max_connections, max_keepalive_connections=max_connections
         )
+        self._http2 = http2
         self._client: Optional[httpx.AsyncClient] = None
         self._auth_lock = asyncio.Lock()
 
@@ -81,9 +84,9 @@ class OAAsyncClient:
 
     async def _ensure_client(self) -> None:
         if self._client is None:
-            # Enable HTTP/2 - gives higher throughput with many small requests
+            # Enable HTTP/2 by default – higher throughput with many small requests
             self._client = httpx.AsyncClient(
-                http2=True, timeout=self._timeout, limits=self._limits
+                http2=self._http2, timeout=self._timeout, limits=self._limits
             )
 
     def _require_client(self) -> httpx.AsyncClient:
@@ -180,7 +183,7 @@ class OAAsyncClient:
 
 
 class OpenAddressesSource(AddressSource):
-    """Zero-copy streaming OpenAddresses adapter."""
+    """Zero-copy streaming OpenAddresses adapter with resilient retries."""
 
     def __init__(
         self,
@@ -189,12 +192,21 @@ class OpenAddressesSource(AddressSource):
         max_connections: int = 16,
         jobs_limit: Optional[int] = None,
         token: Optional[str] = None,
+        *,
+        stream_max_retries: int = 5,
+        stream_backoff_base: float = 0.5,
+        stream_timeout: float = 120.0,
     ):
         self.source = source
         self.layer = layer
         self.max_connections = max_connections
         self.jobs_limit = jobs_limit
         self.token = token
+
+        # Streaming robustness knobs
+        self.stream_max_retries = max(1, stream_max_retries)
+        self.stream_backoff_base = max(0.0, stream_backoff_base)
+        self.stream_timeout = max(10.0, stream_timeout)
 
         self._producer_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=min(max_connections, (os.cpu_count() or 8) * 2)
@@ -203,7 +215,8 @@ class OpenAddressesSource(AddressSource):
     def _compose_raw(self, props: Dict[str, Any], job: Job) -> Tuple[str, Optional[str]]:
         _country, _region, _city = job.source_name.split("/")
         number = props.get("number") or ""
-        street = (props.get("street") or props.get("street_name") or "").upper()
+        street = (props.get("street") or props.get(
+            "street_name") or "").upper()
         unit = props.get("unit") or ""
         city = (
             (props.get("city") or props.get("locality")
@@ -216,7 +229,8 @@ class OpenAddressesSource(AddressSource):
         region = normalize_region(str(raw_region), country).upper()
         postcode = props.get("postcode") or ""
 
-        left = " ".join(p for p in [str(number).strip(), str(street).strip(), str(unit).strip()] if p)
+        left = " ".join(p for p in [str(number).strip(), str(
+            street).strip(), str(unit).strip()] if p)
         right = ", ".join(
             p for p in [str(city).strip(), str(district).strip(), region, str(postcode).strip()] if p
         )
@@ -229,29 +243,75 @@ class OpenAddressesSource(AddressSource):
         cc: Optional[str] = country.strip().upper() if country else None
         return _clean_ws(raw), cc
 
-    async def _iter_geojson_props_streaming(self, client: httpx.AsyncClient, job: Job) -> AsyncGenerator[Dict[str, Any], None]:
+    async def _iter_geojson_props_streaming(
+        self,
+        client: httpx.AsyncClient,
+        job: Job,
+        *,
+        timeout: float,
+        max_retries: int,
+        backoff_base: float,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
         """
-        Stream and decompress a .geojson.gz file from OpenAddresses, yield GeoJSON 'properties'.
+        Stream and decompress a .geojson.gz file from OpenAddresses, yielding GeoJSON 'properties'.
+        Resilient to HTTP/2 stream resets with exponential backoff retries.
+
+        NOTE: On retry we restart the stream (cannot resume mid-GZIP). This can
+        re-emit features already seen before the failure. Downstream dedupe mitigates this.
         """
         url = f"https://v2.openaddresses.io/batch-prod/job/{job.id}/source.geojson.gz"
-        logger.info("OA: streaming job %s from %s", job.id, url)
+        attempt = 0
 
-        decompressor = zlib.decompressobj(wbits=16 + zlib.MAX_WBITS)
-        buffer = b""
-        count = 0
-        start = perf_counter()
+        while True:
+            attempt += 1
+            decompressor = zlib.decompressobj(wbits=16 + zlib.MAX_WBITS)
+            buffer = b""
+            count = 0
+            start = perf_counter()
 
-        async with client.stream("GET", url, timeout=120.0) as resp:
-            async for chunk in resp.aiter_bytes():
-                try:
-                    buffer += decompressor.decompress(chunk)
-                except zlib.error as e:
-                    logger.exception("Decompression error in job %s: %s", job.id, e)
-                    break
+            try:
+                logger.info("OA: streaming job %s from %s (attempt %d/%d)",
+                            job.id, url, attempt, max_retries)
+                async with client.stream("GET", url, timeout=timeout) as resp:
+                    resp.raise_for_status()
 
-                while b"\n" in buffer:
-                    line, buffer = buffer.split(b"\n", 1)
-                    line = line.strip()
+                    async for chunk in resp.aiter_bytes():
+                        try:
+                            buffer += decompressor.decompress(chunk)
+                        except zlib.error as e:
+                            logger.exception(
+                                "Decompression error in job %s (attempt %d): %s", job.id, attempt, e)
+                            raise
+
+                        while b"\n" in buffer:
+                            line, buffer = buffer.split(b"\n", 1)
+                            line = line.strip()
+                            if not line:
+                                continue
+                            if line.startswith(b"\x1e"):
+                                line = line.lstrip(b"\x1e").strip()
+                                if not line:
+                                    continue
+                            try:
+                                obj = orjson.loads(line)
+                                if obj.get("type") == "Feature":
+                                    yield obj.get("properties") or {}
+                                    count += 1
+                                elif obj.get("type") == "FeatureCollection":
+                                    for feat in obj.get("features", []):
+                                        yield feat.get("properties") or {}
+                                        count += 1
+                                elif isinstance(obj.get("properties"), dict):
+                                    yield obj["properties"]
+                                    count += 1
+                            except Exception:
+                                logger.debug(
+                                    "Skipping malformed JSON in job %s", job.id)
+
+                # Handle leftover trailing data
+                buffer += decompressor.flush()
+                for raw_line in buffer.split(b"\n"):
+                    line = raw_line.strip()
                     if not line:
                         continue
                     if line.startswith(b"\x1e"):
@@ -271,35 +331,41 @@ class OpenAddressesSource(AddressSource):
                             yield obj["properties"]
                             count += 1
                     except Exception:
-                        logger.debug("Skipping malformed JSON in job %s", job.id)
+                        logger.debug(
+                            "Skipping final malformed JSON in job %s", job.id)
 
-            # Handle leftover trailing data
-            buffer += decompressor.flush()
-            for raw_line in buffer.split(b"\n"):
-                line = raw_line.strip()
-                if not line:
-                    continue
-                if line.startswith(b"\x1e"):
-                    line = line.lstrip(b"\x1e").strip()
-                    if not line:
-                        continue
-                try:
-                    obj = orjson.loads(line)
-                    if obj.get("type") == "Feature":
-                        yield obj.get("properties") or {}
-                        count += 1
-                    elif obj.get("type") == "FeatureCollection":
-                        for feat in obj.get("features", []):
-                            yield feat.get("properties") or {}
-                            count += 1
-                    elif isinstance(obj.get("properties"), dict):
-                        yield obj["properties"]
-                        count += 1
-                except Exception:
-                    logger.debug("Skipping final malformed JSON in job %s", job.id)
+                duration = perf_counter() - start
+                logger.info(
+                    "OA: parsed job %s → %d features in %.2fs (%.1f f/s) [attempt %d]",
+                    job.id, count, duration, count / duration if duration else 0.0, attempt
+                )
+                # Success; exit retry loop
+                return
 
-        duration = perf_counter() - start
-        logger.info("OA: parsed job %s → %d features in %.2fs (%.1f f/s)", job.id, count, duration, count / duration if duration else 0.0)
+            except (
+                httpx.RemoteProtocolError,
+                httpx.ReadError,
+                httpx.ConnectError,
+                httpx.TimeoutException,
+                zlib.error,
+            ) as e:
+                if attempt >= max_retries:
+                    logger.error(
+                        "OA: streaming job %s failed after %d attempts: %s",
+                        job.id, attempt, repr(e)
+                    )
+                    # Reraise to let caller handle/log
+                    raise
+                # Backoff with small jitter
+                wait = backoff_base * (2 ** (attempt - 1)) + \
+                    random.uniform(0.0, 0.25)
+                logger.warning(
+                    "OA: stream error job %s (attempt %d/%d): %s; retrying in %.2fs",
+                    job.id, attempt, max_retries, repr(e), wait
+                )
+                await asyncio.sleep(wait)
+                # Loop to retry with a fresh connection/decompressor
+                continue
 
     async def records(self) -> AsyncGenerator[InputAddress, None]:
         async with OAAsyncClient(max_connections=self.max_connections, token=self.token) as client:
@@ -313,18 +379,29 @@ class OpenAddressesSource(AddressSource):
                 )
 
             parse_sem = asyncio.Semaphore(self.max_connections)
-            out_q: asyncio.Queue[Any] = asyncio.Queue(maxsize=self.max_connections * 8)
+            out_q: asyncio.Queue[Any] = asyncio.Queue(
+                maxsize=self.max_connections * 8)
 
             async def parse_job(job: Job) -> None:
                 async with parse_sem:
                     try:
-                        async for props in self._iter_geojson_props_streaming(client._require_client(), job):
+                        async for props in self._iter_geojson_props_streaming(
+                            client._require_client(),
+                            job,
+                            timeout=self.stream_timeout,
+                            max_retries=self.stream_max_retries,
+                            backoff_base=self.stream_backoff_base,
+                        ):
+                            # Very basic validation check
+                            if not props.get("number") or not props.get("street"):
+                                continue
                             raw, cc = self._compose_raw(props, job)
                             await out_q.put(InputAddress(address_raw=raw, country_code=cc, extras=props))
                     except Exception as e:
                         logger.exception("OA: error in job %s: %s", job.id, e)
 
-            orchestrator = asyncio.create_task(self._orchestrate_jobs(jobs, parse_job, out_q))
+            orchestrator = asyncio.create_task(
+                self._orchestrate_jobs(jobs, parse_job, out_q))
 
             try:
                 while True:
@@ -343,6 +420,7 @@ class OpenAddressesSource(AddressSource):
         parse_job_fn,
         out_q: asyncio.Queue
     ) -> None:
-        tasks = [asyncio.create_task(parse_job_fn(job), name=f"oa_job_{job.id}") for job in jobs]
+        tasks = [asyncio.create_task(parse_job_fn(
+            job), name=f"oa_job_{job.id}") for job in jobs]
         await asyncio.gather(*tasks, return_exceptions=True)
         await out_q.put(None)
