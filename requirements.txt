@@ -1,19 +1,4 @@
-# ETL & DB
-psycopg                  # psycopg3 driver for PostgreSQL
-psycopg[pool]
-pyarrow
-
-# Environment
-aiofiles
+postal
 orjson
-python-dotenv            # load .env vars
-httpx                    # used by oa_api
-
-# Address normalization
-usaddress
-usaddress-scourgify
-normalizer-usps
-
-shapely
-rapidfuzz                # fuzzy matching
-smartystreets_python_sdk # geocoding lookups
+httpx
+aiofiles
