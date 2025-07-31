@@ -1,3 +1,5 @@
+# normalize_addresses/sources/openaddresses.py
+
 import os
 import gzip
 import contextlib
@@ -82,8 +84,10 @@ class OAAsyncClient:
 
     async def _ensure_client(self) -> None:
         if self._client is None:
+            # Enable HTTP/2 - gives higher throughput with many small requests
             self._client = httpx.AsyncClient(
-                timeout=self._timeout, limits=self._limits)
+                http2=True, timeout=self._timeout, limits=self._limits
+            )
 
     def _require_client(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -101,7 +105,6 @@ class OAAsyncClient:
             resp = await client.post(
                 f"{self.api_url}/login",
                 json={"username": self.username, "password": self.password},
-                timeout=self._timeout,
             )
             resp.raise_for_status()
             data = resp.json()
@@ -159,6 +162,7 @@ class OAAsyncClient:
 
         async with client.stream("GET", url, timeout=timeout) as resp:
             resp.raise_for_status()
+            # NOTE: sendfile zero-copy would be faster; aiofiles keeps code portable
             async with aiofiles.open(dest, "wb") as fd:
                 async for chunk in resp.aiter_bytes(chunk_size):
                     n_bytes += len(chunk)
@@ -199,43 +203,37 @@ class OpenAddressesSource(AddressSource):
         self.token = token
         self.parse_timeout = parse_timeout
 
-        # reuse one thread pool for all parsing producers
+        # One thread pool that fans out to all producer tasks
         self._producer_executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=min(max_connections, 8)
+            max_workers=min(max_connections, (os.cpu_count() or 8) * 2)
         )
 
+    # ------------------------------------------------------------------ #
+    # GeoJSON streaming helper                                           #
+    # ------------------------------------------------------------------ #
     async def _iter_geojson_props(self, gz_path: Path) -> AsyncGenerator[Dict[str, Any], None]:
         """
-        Stream properties from OA files.
-
-        Strategy & cancellation/backpressure are the same,
-        but we now special‐case the sentinel so it's never dropped.
+        Stream 'properties' objects from an OA .geojson.gz file.
         """
         loop = asyncio.get_running_loop()
-        queue: asyncio.Queue[Optional[Dict[str, Any]]] = asyncio.Queue()
+        queue: asyncio.Queue[Optional[Dict[str, Any]]
+                             ] = asyncio.Queue(maxsize=65536)
         stop_event = threading.Event()
 
         def _put(item: Optional[Dict[str, Any]]) -> None:
             try:
-                # Try the fast, non-blocking enqueue
                 queue.put_nowait(item)
             except asyncio.QueueFull:
                 if item is not None:
-                    # first real backpressure hit: warn & mark stop
-                    logger.warning(
-                        "OA: queue backpressure; stopping producer for %s", gz_path.name
-                    )
+                    logger.warning("OA: queue backpressure; stopping producer for %s",
+                                   gz_path.name)
                     stop_event.set()
                 else:
-                    # sentinel: queue is full, so schedule a blocking put
-                    # this will wait in the loop until there's room
                     asyncio.create_task(queue.put(None))
 
         def _safe_put(item: Optional[Dict[str, Any]]) -> bool:
-            # if we've already tripped backpressure, drop further data items
             if stop_event.is_set() and item is not None:
                 return False
-            # schedule the enqueue in the loop thread
             loop.call_soon_threadsafe(_put, item)
             return True
 
@@ -271,7 +269,6 @@ class OpenAddressesSource(AddressSource):
                 return 0
 
             try:
-                # NDJSON fast‐path
                 with gzip.open(gz_path, "rt", encoding="utf-8", errors="replace", newline="") as fh:
                     first = False
                     for raw in fh:
@@ -294,11 +291,10 @@ class OpenAddressesSource(AddressSource):
                         n += _emit(obj)
 
                 elapsed = perf_counter() - start
-                mode = "ndjson"
                 rate = n / elapsed if elapsed > 0 else 0.0
                 logger.info(
-                    "OA: parsed %s -> %s features in %.2fs (%.1f f/s, mode=%s)",
-                    gz_path.name, f"{n:,}", elapsed, rate, mode,
+                    "OA: parsed %s → %s features in %.2fs (%.1f f/s, mode=ndjson)",
+                    gz_path.name, f"{n:,}", elapsed, rate,
                 )
 
             except Exception as e:
@@ -306,13 +302,12 @@ class OpenAddressesSource(AddressSource):
                     "OA: unexpected error streaming %s: %s", gz_path.name, e)
 
             finally:
-                # Always enqueue the sentinel, no matter what
                 _safe_put(None)
 
-        # Submit the producer once
+        # Kick-off the producer exactly once
         self._producer_executor.submit(producer)
 
-        # Consume from the queue
+        # Consumer side
         try:
             while True:
                 item = await queue.get()
@@ -322,6 +317,9 @@ class OpenAddressesSource(AddressSource):
         finally:
             stop_event.set()
 
+    # ------------------------------------------------------------------ #
+    # Helpers                                                            #
+    # ------------------------------------------------------------------ #
     def _compose_raw(self, props: Dict[str, Any], job: Job) -> Tuple[str, Optional[str]]:
         _country, _region, _city = job.source_name.split("/")
         number = props.get("number") or ""
@@ -353,6 +351,9 @@ class OpenAddressesSource(AddressSource):
         cc: Optional[str] = country.strip().upper() if country else None
         return _clean_ws(raw), cc
 
+    # ------------------------------------------------------------------ #
+    # Public API                                                         #
+    # ------------------------------------------------------------------ #
     async def records(self) -> AsyncGenerator[InputAddress, None]:
         async with OAAsyncClient(max_connections=self.max_connections, token=self.token) as client:
             jobs = await client.fetch_jobs(self.source, self.layer)
@@ -360,8 +361,8 @@ class OpenAddressesSource(AddressSource):
                 jobs = jobs[: self.jobs_limit]
             elif len(jobs) > 500:
                 logger.warning(
-                    "OA: %d jobs selected (no --jobs-limit). This may take a long time; use --jobs-limit to test first.",
-                    len(jobs),
+                    "OA: %d jobs selected (no --jobs-limit). This may take a long time; "
+                    "use --jobs-limit to test first.", len(jobs)
                 )
 
             self.tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -377,31 +378,34 @@ class OpenAddressesSource(AddressSource):
                 _dl(j), name=f"oa_dl_{j.id}") for j in jobs]
             out_q: asyncio.Queue[Any] = asyncio.Queue(
                 maxsize=self.max_connections * 8)
-            parse_sem = asyncio.Semaphore(min(self.max_connections, 8))
+            parse_sem = asyncio.Semaphore(
+                min(self.max_connections, (os.cpu_count() or 8) * 2)
+            )
             parser_tasks: List[asyncio.Task] = []
 
             async def parse_file(p: Path, j: Job) -> None:
                 yielded = 0
                 start = perf_counter()
                 async with parse_sem:
-                    logger.info("OA: parsing begin -> %s", p.name)
+                    logger.info("OA: parsing begin → %s", p.name)
                     try:
                         async for props in self._iter_geojson_props(p):
                             raw, cc = self._compose_raw(props, j)
-                            await out_q.put(normalize_one(InputAddress(address_raw=raw, country_code=cc, extras=props)))
+                            await out_q.put(
+                                InputAddress(address_raw=raw,
+                                             country_code=cc, extras=props)
+                            )
                             yielded += 1
                     except asyncio.TimeoutError:
                         logger.error(
-                            "OA: parse timeout -> %s; skipping remainder", p.name)
+                            "OA: parse timeout → %s; skipping remainder", p.name)
                     finally:
                         dur = perf_counter() - start
                         rate = yielded / dur if dur else 0.0
-                        logger.info(
-                            "OA: finished %s -> %s records in %.2fs (%.1f r/s)",
-                            p.name, f"{yielded:,}", dur, rate,
-                        )
+                        logger.info("OA: finished %s → %s records in %.2fs (%.1f r/s)",
+                                    p.name, f"{yielded:,}", dur, rate)
 
-            async def orchestrate():
+            async def orchestrate() -> None:
                 for dl in asyncio.as_completed(dl_tasks):
                     try:
                         p, j = await dl
@@ -409,10 +413,9 @@ class OpenAddressesSource(AddressSource):
                         logger.exception("OA: download failed: %s", e)
                         continue
                     parser_tasks.append(asyncio.create_task(parse_file(p, j)))
-                # wait for parsers
+
                 await asyncio.gather(*parser_tasks, return_exceptions=True)
-                # sentinel
-                await out_q.put(None)
+                await out_q.put(None)  # sentinel
 
             orch = asyncio.create_task(orchestrate())
             try:

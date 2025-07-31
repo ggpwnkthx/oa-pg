@@ -1,4 +1,5 @@
 postal
 orjson
 httpx
+h2
 aiofiles
