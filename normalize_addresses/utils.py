@@ -1,5 +1,3 @@
-# normalize_addresses/utils.py
-
 import re
 import unicodedata
 from typing import Optional, Sequence, Tuple, List, Dict, Any
@@ -173,7 +171,8 @@ def _map_libpostal_components(
     )
 
     # Admin areas
-    out["admin_area_2"] = _pick(d, ["county", "state_district", "province_district"])
+    out["admin_area_2"] = _pick(
+        d, ["county", "state_district", "province_district"])
     out["admin_area_1"] = _pick(d, ["state", "province", "region", "island"])
 
     # Postal code & country

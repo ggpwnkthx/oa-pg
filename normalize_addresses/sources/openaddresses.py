@@ -1,14 +1,11 @@
-# normalize_addresses/sources/openaddresses.py
-
 import os
-import gzip
 import contextlib
-import threading
 from time import perf_counter
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 import asyncio
 import concurrent.futures
+import zlib
 
 import aiofiles  # type: ignore
 import httpx     # type: ignore
@@ -16,7 +13,7 @@ import orjson     # type: ignore
 
 from dataclasses import dataclass
 
-from ..utils import _clean_ws, normalize_one, normalize_region
+from ..utils import _clean_ws, normalize_region
 from ..models import InputAddress
 from .base import AddressSource
 from ..logging_config import logger
@@ -183,148 +180,30 @@ class OAAsyncClient:
 
 
 class OpenAddressesSource(AddressSource):
-    """OpenAddresses adapter. Downloads jobs & yields InputAddress."""
+    """Zero-copy streaming OpenAddresses adapter."""
 
     def __init__(
         self,
         source: str,
         layer: str,
-        tmp_dir: Path,
         max_connections: int = 16,
         jobs_limit: Optional[int] = None,
         token: Optional[str] = None,
-        parse_timeout: float = 900.0,
     ):
         self.source = source
         self.layer = layer
-        self.tmp_dir = tmp_dir
         self.max_connections = max_connections
         self.jobs_limit = jobs_limit
         self.token = token
-        self.parse_timeout = parse_timeout
 
-        # One thread pool that fans out to all producer tasks
         self._producer_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=min(max_connections, (os.cpu_count() or 8) * 2)
         )
 
-    # ------------------------------------------------------------------ #
-    # GeoJSON streaming helper                                           #
-    # ------------------------------------------------------------------ #
-    async def _iter_geojson_props(self, gz_path: Path) -> AsyncGenerator[Dict[str, Any], None]:
-        """
-        Stream 'properties' objects from an OA .geojson.gz file.
-        """
-        loop = asyncio.get_running_loop()
-        queue: asyncio.Queue[Optional[Dict[str, Any]]
-                             ] = asyncio.Queue(maxsize=65536)
-        stop_event = threading.Event()
-
-        def _put(item: Optional[Dict[str, Any]]) -> None:
-            try:
-                queue.put_nowait(item)
-            except asyncio.QueueFull:
-                if item is not None:
-                    logger.warning("OA: queue backpressure; stopping producer for %s",
-                                   gz_path.name)
-                    stop_event.set()
-                else:
-                    asyncio.create_task(queue.put(None))
-
-        def _safe_put(item: Optional[Dict[str, Any]]) -> bool:
-            if stop_event.is_set() and item is not None:
-                return False
-            loop.call_soon_threadsafe(_put, item)
-            return True
-
-        def producer() -> None:
-            n = 0
-            start = perf_counter()
-
-            class Fallback(Exception):
-                pass
-
-            def _emit(obj: Dict[str, Any]) -> int:
-                cnt = 0
-                t = obj.get("type")
-                if t == "Feature":
-                    props = obj.get("properties") or {}
-                    if not _safe_put(props):
-                        return 0
-                    return 1
-                if t == "FeatureCollection" and isinstance(obj.get("features"), list):
-                    for feat in obj["features"]:
-                        if stop_event.is_set():
-                            break
-                        if isinstance(feat, dict):
-                            props = feat.get("properties") or {}
-                            if not _safe_put(props):
-                                break
-                            cnt += 1
-                    return cnt
-                props = obj.get("properties")
-                if isinstance(props, dict):
-                    _safe_put(props)
-                    return 1
-                return 0
-
-            try:
-                with gzip.open(gz_path, "rt", encoding="utf-8", errors="replace", newline="") as fh:
-                    first = False
-                    for raw in fh:
-                        if stop_event.is_set():
-                            break
-                        line = raw.strip()
-                        if not line:
-                            continue
-                        if line.startswith("\x1e"):
-                            line = line.lstrip("\x1e").strip()
-                            if not line:
-                                continue
-                        try:
-                            obj = orjson.loads(line)
-                        except Exception:
-                            if not first:
-                                raise Fallback()
-                            continue
-                        first = True
-                        n += _emit(obj)
-
-                elapsed = perf_counter() - start
-                rate = n / elapsed if elapsed > 0 else 0.0
-                logger.info(
-                    "OA: parsed %s → %s features in %.2fs (%.1f f/s, mode=ndjson)",
-                    gz_path.name, f"{n:,}", elapsed, rate,
-                )
-
-            except Exception as e:
-                logger.exception(
-                    "OA: unexpected error streaming %s: %s", gz_path.name, e)
-
-            finally:
-                _safe_put(None)
-
-        # Kick-off the producer exactly once
-        self._producer_executor.submit(producer)
-
-        # Consumer side
-        try:
-            while True:
-                item = await queue.get()
-                if item is None:
-                    break
-                yield item
-        finally:
-            stop_event.set()
-
-    # ------------------------------------------------------------------ #
-    # Helpers                                                            #
-    # ------------------------------------------------------------------ #
     def _compose_raw(self, props: Dict[str, Any], job: Job) -> Tuple[str, Optional[str]]:
         _country, _region, _city = job.source_name.split("/")
         number = props.get("number") or ""
-        street = (props.get("street") or props.get(
-            "street_name") or "").upper()
+        street = (props.get("street") or props.get("street_name") or "").upper()
         unit = props.get("unit") or ""
         city = (
             (props.get("city") or props.get("locality")
@@ -337,8 +216,7 @@ class OpenAddressesSource(AddressSource):
         region = normalize_region(str(raw_region), country).upper()
         postcode = props.get("postcode") or ""
 
-        left = " ".join(p for p in [str(number).strip(), str(
-            street).strip(), str(unit).strip()] if p)
+        left = " ".join(p for p in [str(number).strip(), str(street).strip(), str(unit).strip()] if p)
         right = ", ".join(
             p for p in [str(city).strip(), str(district).strip(), region, str(postcode).strip()] if p
         )
@@ -351,9 +229,78 @@ class OpenAddressesSource(AddressSource):
         cc: Optional[str] = country.strip().upper() if country else None
         return _clean_ws(raw), cc
 
-    # ------------------------------------------------------------------ #
-    # Public API                                                         #
-    # ------------------------------------------------------------------ #
+    async def _iter_geojson_props_streaming(self, client: httpx.AsyncClient, job: Job) -> AsyncGenerator[Dict[str, Any], None]:
+        """
+        Stream and decompress a .geojson.gz file from OpenAddresses, yield GeoJSON 'properties'.
+        """
+        url = f"https://v2.openaddresses.io/batch-prod/job/{job.id}/source.geojson.gz"
+        logger.info("OA: streaming job %s from %s", job.id, url)
+
+        decompressor = zlib.decompressobj(wbits=16 + zlib.MAX_WBITS)
+        buffer = b""
+        count = 0
+        start = perf_counter()
+
+        async with client.stream("GET", url, timeout=120.0) as resp:
+            async for chunk in resp.aiter_bytes():
+                try:
+                    buffer += decompressor.decompress(chunk)
+                except zlib.error as e:
+                    logger.exception("Decompression error in job %s: %s", job.id, e)
+                    break
+
+                while b"\n" in buffer:
+                    line, buffer = buffer.split(b"\n", 1)
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if line.startswith(b"\x1e"):
+                        line = line.lstrip(b"\x1e").strip()
+                        if not line:
+                            continue
+                    try:
+                        obj = orjson.loads(line)
+                        if obj.get("type") == "Feature":
+                            yield obj.get("properties") or {}
+                            count += 1
+                        elif obj.get("type") == "FeatureCollection":
+                            for feat in obj.get("features", []):
+                                yield feat.get("properties") or {}
+                                count += 1
+                        elif isinstance(obj.get("properties"), dict):
+                            yield obj["properties"]
+                            count += 1
+                    except Exception:
+                        logger.debug("Skipping malformed JSON in job %s", job.id)
+
+            # Handle leftover trailing data
+            buffer += decompressor.flush()
+            for raw_line in buffer.split(b"\n"):
+                line = raw_line.strip()
+                if not line:
+                    continue
+                if line.startswith(b"\x1e"):
+                    line = line.lstrip(b"\x1e").strip()
+                    if not line:
+                        continue
+                try:
+                    obj = orjson.loads(line)
+                    if obj.get("type") == "Feature":
+                        yield obj.get("properties") or {}
+                        count += 1
+                    elif obj.get("type") == "FeatureCollection":
+                        for feat in obj.get("features", []):
+                            yield feat.get("properties") or {}
+                            count += 1
+                    elif isinstance(obj.get("properties"), dict):
+                        yield obj["properties"]
+                        count += 1
+                except Exception:
+                    logger.debug("Skipping final malformed JSON in job %s", job.id)
+
+        duration = perf_counter() - start
+        logger.info("OA: parsed job %s → %d features in %.2fs (%.1f f/s)", job.id, count, duration, count / duration if duration else 0.0)
+
     async def records(self) -> AsyncGenerator[InputAddress, None]:
         async with OAAsyncClient(max_connections=self.max_connections, token=self.token) as client:
             jobs = await client.fetch_jobs(self.source, self.layer)
@@ -365,59 +312,20 @@ class OpenAddressesSource(AddressSource):
                     "use --jobs-limit to test first.", len(jobs)
                 )
 
-            self.tmp_dir.mkdir(parents=True, exist_ok=True)
-            http_sem = asyncio.Semaphore(self.max_connections)
+            parse_sem = asyncio.Semaphore(self.max_connections)
+            out_q: asyncio.Queue[Any] = asyncio.Queue(maxsize=self.max_connections * 8)
 
-            async def _dl(job: Job) -> Tuple[Path, Job]:
-                dest = self.tmp_dir / f"oa_{job.id}.geojson.gz"
-                async with http_sem:
-                    await client.download_job(job.id, dest)
-                return dest, job
-
-            dl_tasks = [asyncio.create_task(
-                _dl(j), name=f"oa_dl_{j.id}") for j in jobs]
-            out_q: asyncio.Queue[Any] = asyncio.Queue(
-                maxsize=self.max_connections * 8)
-            parse_sem = asyncio.Semaphore(
-                min(self.max_connections, (os.cpu_count() or 8) * 2)
-            )
-            parser_tasks: List[asyncio.Task] = []
-
-            async def parse_file(p: Path, j: Job) -> None:
-                yielded = 0
-                start = perf_counter()
+            async def parse_job(job: Job) -> None:
                 async with parse_sem:
-                    logger.info("OA: parsing begin → %s", p.name)
                     try:
-                        async for props in self._iter_geojson_props(p):
-                            raw, cc = self._compose_raw(props, j)
-                            await out_q.put(
-                                InputAddress(address_raw=raw,
-                                             country_code=cc, extras=props)
-                            )
-                            yielded += 1
-                    except asyncio.TimeoutError:
-                        logger.error(
-                            "OA: parse timeout → %s; skipping remainder", p.name)
-                    finally:
-                        dur = perf_counter() - start
-                        rate = yielded / dur if dur else 0.0
-                        logger.info("OA: finished %s → %s records in %.2fs (%.1f r/s)",
-                                    p.name, f"{yielded:,}", dur, rate)
-
-            async def orchestrate() -> None:
-                for dl in asyncio.as_completed(dl_tasks):
-                    try:
-                        p, j = await dl
+                        async for props in self._iter_geojson_props_streaming(client._require_client(), job):
+                            raw, cc = self._compose_raw(props, job)
+                            await out_q.put(InputAddress(address_raw=raw, country_code=cc, extras=props))
                     except Exception as e:
-                        logger.exception("OA: download failed: %s", e)
-                        continue
-                    parser_tasks.append(asyncio.create_task(parse_file(p, j)))
+                        logger.exception("OA: error in job %s: %s", job.id, e)
 
-                await asyncio.gather(*parser_tasks, return_exceptions=True)
-                await out_q.put(None)  # sentinel
+            orchestrator = asyncio.create_task(self._orchestrate_jobs(jobs, parse_job, out_q))
 
-            orch = asyncio.create_task(orchestrate())
             try:
                 while True:
                     item = await out_q.get()
@@ -425,6 +333,16 @@ class OpenAddressesSource(AddressSource):
                         break
                     yield item
             finally:
-                orch.cancel()
+                orchestrator.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
-                    await orch
+                    await orchestrator
+
+    async def _orchestrate_jobs(
+        self,
+        jobs: List[Job],
+        parse_job_fn,
+        out_q: asyncio.Queue
+    ) -> None:
+        tasks = [asyncio.create_task(parse_job_fn(job), name=f"oa_job_{job.id}") for job in jobs]
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await out_q.put(None)

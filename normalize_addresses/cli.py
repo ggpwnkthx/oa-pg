@@ -34,8 +34,6 @@ def build_cli() -> argparse.ArgumentParser:
                     help="OA layer (default: addresses)")
     oa.add_argument("--out", required=True, type=Path,
                     help="Output CSV.gz path")
-    oa.add_argument("--tmp-dir", type=Path,
-                    default=Path("./tmp"), help="Temp/cache dir")
     oa.add_argument("--max-connections", type=int,
                     default=16, help="HTTP concurrency")
     oa.add_argument("--jobs-limit", type=int,
@@ -59,7 +57,6 @@ async def main_async(args: argparse.Namespace) -> None:
         src = OpenAddressesSource(
             source=args.source,
             layer=args.layer,
-            tmp_dir=args.tmp_dir,
             max_connections=args.max_connections,
             jobs_limit=args.jobs_limit,
             token=args.token,

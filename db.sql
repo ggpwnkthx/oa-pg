@@ -14,21 +14,21 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;  -- UUID generator
 /*********************************************************************/
 CREATE TABLE addr.addresses (
     /* Primary key --------------------------------------------------*/
-    uuid             UUID    DEFAULT gen_random_uuid(),
+    uuid               UUID    DEFAULT gen_random_uuid(),
     /* Generic address elements ------------------------------------*/
-    country_code     CHAR(2)        NOT NULL, -- ISO-3166-1 α-2
-    postal_code      VARCHAR(20),
-    admin_area_1     VARCHAR(80),  -- state / province / region
-    admin_area_2     VARCHAR(80),  -- county / department / district
-    locality         VARCHAR(120), -- city / town
+    country_code       CHAR(2)       NOT NULL, -- ISO-3166-1 α-2
+    postal_code        VARCHAR(20),
+    admin_area_1       VARCHAR(80),  -- state / province / region
+    admin_area_2       VARCHAR(80),  -- county / department / district
+    locality           VARCHAR(120), -- city / town
     dependent_locality VARCHAR(120), -- suburb / neighbourhood
-    thoroughfare     VARCHAR(160), -- street name (no house #)
-    premise          VARCHAR(60),  -- house / building / lot
-    sub_premise      VARCHAR(30),  -- unit / apartment
+    thoroughfare       VARCHAR(160), -- street name (no house #)
+    premise            VARCHAR(60),  -- house / building / lot
+    sub_premise        VARCHAR(30),  -- unit / apartment
     /* Full-string variants ----------------------------------------*/
-    address_norm     TEXT            NOT NULL, -- libpostal-normalised
+    address_norm       TEXT          NOT NULL, -- libpostal-normalised
     /* Search vector (full-text) - STORED keeps it always in sync ---*/
-    search_vector  TSVECTOR GENERATED ALWAYS AS
+    search_vector      TSVECTOR      GENERATED ALWAYS AS
       ( to_tsvector('simple', address_norm) ) STORED,
     /* Primary key & partition key ---------------------------------*/
     PRIMARY KEY (uuid)

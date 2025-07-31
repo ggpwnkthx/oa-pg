@@ -1,4 +1,3 @@
-# normalize_addresses/pipeline.py
 import asyncio
 import contextlib
 import concurrent.futures
@@ -36,7 +35,8 @@ class NormalizationPipeline:
 
         # Dedicated pool for CPU-bound tasks (libpostal + gzip+csv)
         self._cpu_executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=max(1, concurrency if concurrency > 0 else (os.cpu_count() or 4))
+            max_workers=max(1, concurrency if concurrency >
+                            0 else (os.cpu_count() or 4))
         )
 
         logger.debug(
@@ -66,7 +66,8 @@ class NormalizationPipeline:
         start = perf_counter()
         processed = 0
 
-        logger.info("Pipeline run starting (status_interval=%.1fs)", self.status_interval)
+        logger.info("Pipeline run starting (status_interval=%.1fs)",
+                    self.status_interval)
 
         # ------------------------------------------------------------------
         # Periodic monitor task
@@ -105,7 +106,8 @@ class NormalizationPipeline:
                     norm_rec = item
                 else:
                     # InputAddress → NormalizedRecord (CPU-bound)
-                    norm_rec = await self._async_normalize(item)  # type: ignore[arg-type]
+                    # type: ignore[arg-type]
+                    norm_rec = await self._async_normalize(item)
 
                 batch.append(norm_rec.to_csv_row())
                 processed += 1

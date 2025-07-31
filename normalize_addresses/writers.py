@@ -1,5 +1,3 @@
-# normalize_addresses/writers.py
-
 import csv
 import gzip
 import io
