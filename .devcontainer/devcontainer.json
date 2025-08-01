@@ -7,7 +7,12 @@
 	"customizations": {
 		"vscode": {
 			"extensions": [
-				"AndyGeek.context-code"
+				"AndyGeek.context-code",
+				"ms-python.black-formatter",
+				"ms-python.python",
+				"ms-python.vscode-python-envs",
+				"ms-python.vscode-pylance",
+				"ms-python.debugpy"
 			]
 		}
 	},
@@ -19,8 +24,8 @@
 	// "forwardPorts": [],
 
 	// Use 'postCreateCommand' to run commands after the container is created.
-	"postCreateCommand": "sudo apt-get update && sudo apt-get install postgresql-15 postgresql-15-postgis-3 postgresql-15-postgis-3-scripts postgresql-15-fuzzystrmatch unzip wget"
-
+	"postCreateCommand": "chmod +x scripts/post_create.sh && scripts/post_create.sh"
+	
 	// Configure tool-specific properties.
 	// "customizations": {},
 
