@@ -108,7 +108,7 @@ class NormalizedRecord:
     # CSV / writer interface                                             #
     # ------------------------------------------------------------------ #
     def to_csv_row(self) -> List[str]:
-        """Writers expect exactly one column – the canonical string."""
+        """Writers expect exactly one column - the canonical string."""
         return [self.address_norm]
 
     # -----------------------------

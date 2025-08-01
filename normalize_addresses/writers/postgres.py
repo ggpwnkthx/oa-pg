@@ -1,5 +1,5 @@
 """
-PostgresBulkWriter – ultra‑fast COPY‑based loader to PostgreSQL, now persisting
+PostgresBulkWriter - ultra-fast COPY-based loader to PostgreSQL, now persisting
 only a single `address_norm` column.
 """
 from __future__ import annotations
@@ -35,9 +35,9 @@ _TRUNC_SQL = sql.SQL("TRUNCATE public.addresses_staging")
 
 class PostgresBulkWriter:
     """
-    Ultra‑fast bulk loader using `COPY … FROM STDIN WITH (FORMAT CSV)`.
+    Ultra-fast bulk loader using `COPY … FROM STDIN WITH (FORMAT CSV)`.
 
-    Pipeline now streams *one* column per row – the canonical string produced
+    Pipeline now streams *one* column per row - the canonical string produced
     by `NormalizedRecord.address_norm`.
     """
 
@@ -49,7 +49,7 @@ class PostgresBulkWriter:
         self._cur: psycopg.Cursor | None = None
         self._batches_since_commit = 0
 
-        # In‑memory CSV buffer reused across batches
+        # In-memory CSV buffer reused across batches
         self._buffer = io.StringIO()
         self._csv_writer = csv.writer(
             self._buffer,
@@ -78,17 +78,17 @@ class PostgresBulkWriter:
                 self._conn.close()
 
     # ---------------------------------------------- #
-    # Public API – conforms to BatchWriter            #
+    # Public API - conforms to BatchWriter            #
     # ---------------------------------------------- #
     def write_batch(self, rows: List[List[str]]) -> None:
         """
         Each `rows` item is `[address_norm]`. No additional transformation is
-        required – the canonical string has already been generated upstream.
+        required - the canonical string has already been generated upstream.
         """
         if not (self._conn and self._cur):
             raise RuntimeError("PostgresBulkWriter not initialised")
 
-        # Reset and reuse the in‑memory buffer
+        # Reset and reuse the in-memory buffer
         self._buffer.seek(0)
         self._buffer.truncate(0)
 

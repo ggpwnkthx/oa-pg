@@ -6,3 +6,5 @@ aiofiles
 psycopg
 isal
 python-dotenv
+shapely
+pyshp
