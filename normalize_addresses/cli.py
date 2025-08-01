@@ -1,11 +1,18 @@
+from __future__ import annotations
+
 import argparse
 import asyncio
 import logging
+import os
 from pathlib import Path
 
 from .sources.openaddresses import OpenAddressesSource
 from .pipeline import NormalizationPipeline
+from .writers import CSVGzipWriter, PostgresBulkWriter
 from .logging_config import logger
+
+from dotenv import load_dotenv
+load_dotenv()
 
 
 def build_cli() -> argparse.ArgumentParser:
@@ -32,8 +39,7 @@ def build_cli() -> argparse.ArgumentParser:
                     help="OA source id, e.g. 'us/ca'")
     oa.add_argument("--layer", default="addresses",
                     help="OA layer (default: addresses)")
-    oa.add_argument("--out", required=True, type=Path,
-                    help="Output CSV.gz path")
+    oa.add_argument("--out", type=Path, help="Output CSV.gz path")
     oa.add_argument("--max-connections", type=int,
                     default=16, help="HTTP concurrency")
     oa.add_argument("--jobs-limit", type=int,
@@ -45,6 +51,12 @@ def build_cli() -> argparse.ArgumentParser:
         "--no-batch-dedupe",
         action="store_true",
         help="Disable per-batch deduping of normalized rows (enabled by default).",
+    )
+    oa.add_argument(
+        "--pg-dsn",
+        metavar="DSN",
+        default=os.getenv("PG_DSN"),
+        help='PostgreSQL DSN, e.g. "postgresql://user:pass@host/dbname"',
     )
 
     return p
@@ -69,9 +81,12 @@ async def main_async(args: argparse.Namespace) -> None:
     else:
         raise SystemExit(f"Unknown command: {args.cmd}")
 
+    # Choose writer: CSV or PostgreSQL
+    writer = CSVGzipWriter(Path(args.out)) if args.out else PostgresBulkWriter(dsn=args.pg_dsn)
+
     pipeline = NormalizationPipeline(
         source=src,
-        out_path=args.out,
+        writer=writer,
         concurrency=args.concurrency,
         status_interval=args.status_interval,
         batch_dedupe=not args.no_batch_dedupe,

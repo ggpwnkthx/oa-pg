@@ -1,6 +1,8 @@
-from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, List, Tuple
+from __future__ import annotations
+
 import re
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Tuple
 
 # -----------------------------
 # Fast validity helpers
@@ -51,7 +53,13 @@ class InputAddress:
 
 @dataclass(slots=True)
 class NormalizedRecord:
-    """Normalized record aligned to the Postgres schema (no raw/canonical strings persisted)."""
+    """
+    Normalized record aligned to the (simplified) persistence schema.
+
+    • Component fields exist for validation/dedupe.
+    • Writers persist ONLY `address_norm`, a deterministic, fully-normalized
+      canonical string.
+    """
     country_code: str
     postal_code: Optional[str]
     admin_area_1: Optional[str]
@@ -62,26 +70,46 @@ class NormalizedRecord:
     premise: Optional[str]
     sub_premise: Optional[str]
 
+    # private slot-backed cache (works with slots=True)
+    _address_norm_cache: Optional[str] = field(
+        default=None, init=False, repr=False)
+
+    # ------------------------------------------------------------------ #
+    # Construction helpers                                               #
+    # ------------------------------------------------------------------ #
     @classmethod
-    def from_input(cls, addr: InputAddress) -> 'NormalizedRecord':
+    def from_input(cls, addr: InputAddress) -> "NormalizedRecord":
         # avoid circular import by importing here
-        from .utils import normalize_one  # noqa: F811
+        from .utils import normalize_one  # noqa: F401
         return normalize_one(addr)
 
+    # ------------------------------------------------------------------ #
+    # Canonical string (cached manually)                                 #
+    # ------------------------------------------------------------------ #
+    @property
+    def address_norm(self) -> str:
+        """Canonical, fully-normalized single-line address (lower-cased)."""
+        if self._address_norm_cache is None:
+            from .utils import build_canonical_string  # lazy import
+            components: Dict[str, Optional[str]] = {
+                "premise": self.premise,
+                "thoroughfare": self.thoroughfare,
+                "dependent_locality": self.dependent_locality,
+                "locality": self.locality,
+                "admin_area_2": self.admin_area_2,
+                "admin_area_1": self.admin_area_1,
+                "postal_code": self.postal_code,
+            }
+            self._address_norm_cache = build_canonical_string(
+                components, self.country_code)
+        return self._address_norm_cache
+
+    # ------------------------------------------------------------------ #
+    # CSV / writer interface                                             #
+    # ------------------------------------------------------------------ #
     def to_csv_row(self) -> List[str]:
-        def nz(x: Optional[str]) -> str:
-            return x or ""
-        return [
-            nz(self.country_code),
-            nz(self.postal_code),
-            nz(self.admin_area_1),
-            nz(self.admin_area_2),
-            nz(self.locality),
-            nz(self.dependent_locality),
-            nz(self.thoroughfare),
-            nz(self.premise),
-            nz(self.sub_premise),
-        ]
+        """Writers expect exactly one column – the canonical string."""
+        return [self.address_norm]
 
     # -----------------------------
     # Fast validity check
@@ -148,15 +176,5 @@ class NormalizedRecord:
         return ok
 
 
-# Header order for CSV output (raw and canonical removed)
-CSV_HEADER: List[str] = [
-    "country_code",
-    "postal_code",
-    "admin_area_1",
-    "admin_area_2",
-    "locality",
-    "dependent_locality",
-    "thoroughfare",
-    "premise",
-    "sub_premise",
-]
+# Header order for CSV output (single column)
+CSV_HEADER: List[str] = ["address_norm"]

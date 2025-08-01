@@ -19,6 +19,8 @@ from ..models import InputAddress
 from .base import AddressSource
 from ..logging_config import logger
 
+from dotenv import load_dotenv
+load_dotenv()
 
 @dataclass(slots=True)
 class Job:
@@ -84,7 +86,7 @@ class OAAsyncClient:
 
     async def _ensure_client(self) -> None:
         if self._client is None:
-            # Enable HTTP/2 by default – higher throughput with many small requests
+            # Enable HTTP/2 by default - higher throughput with many small requests
             self._client = httpx.AsyncClient(
                 http2=self._http2, timeout=self._timeout, limits=self._limits
             )

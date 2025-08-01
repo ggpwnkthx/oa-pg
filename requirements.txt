@@ -3,3 +3,6 @@ orjson
 httpx
 h2
 aiofiles
+psycopg
+isal
+python-dotenv
