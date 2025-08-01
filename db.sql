@@ -1,9 +1,6 @@
 /*********************************************************************/
 /* 1. ONE-TIME EXTENSION & SCHEMA SET-UP                             */
 /*********************************************************************/
-CREATE SCHEMA IF NOT EXISTS addr;
-SET search_path TO addr, public;
-
 CREATE EXTENSION IF NOT EXISTS pg_trgm;   --  fast fuzzy / prefix matches
 CREATE EXTENSION IF NOT EXISTS pgcrypto;  -- UUID generator
 
@@ -12,7 +9,7 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;  -- UUID generator
 /*    • hash-partitioned for even write distribution                 */
 /*    • text-search vector + trigram column kept in sync            */
 /*********************************************************************/
-CREATE TABLE addr.addresses (
+CREATE TABLE public.addresses (
     /* Primary key --------------------------------------------------*/
     uuid               UUID    DEFAULT gen_random_uuid(),
     /* Generic address elements ------------------------------------*/
@@ -44,8 +41,8 @@ DECLARE
 BEGIN
     FOR i IN 0..63 LOOP
         EXECUTE format(
-            'CREATE TABLE IF NOT EXISTS addr.addresses_p%02s
-               PARTITION OF addr.addresses
+            'CREATE TABLE IF NOT EXISTS public.addresses_p%02s
+               PARTITION OF public.addresses
                FOR VALUES WITH (MODULUS 64, REMAINDER %s);',
             i, i);
     END LOOP;
@@ -57,19 +54,19 @@ $$ LANGUAGE plpgsql;
 /*********************************************************************/
 -- 4.1  Super-fast fuzzy / prefix match for auto-completion ----------
 CREATE INDEX IF NOT EXISTS idx_addresses_norm_trgm
-    ON addr.addresses USING GIN (address_norm gin_trgm_ops);
+    ON public.addresses USING GIN (address_norm gin_trgm_ops);
 
 -- 4.2  Ordered prefix search on the street name (thoroughfare) ------
 CREATE INDEX IF NOT EXISTS idx_addresses_thoroughfare_btree
-    ON addr.addresses (thoroughfare text_pattern_ops);
+    ON public.addresses (thoroughfare text_pattern_ops);
 
 -- 4.3  Full-text search (tokens, not prefixes) ----------------------
 CREATE INDEX IF NOT EXISTS idx_addresses_search_vector
-    ON addr.addresses USING GIN (search_vector);
+    ON public.addresses USING GIN (search_vector);
 
 -- 4.4  Optional country + postal code filter (skip if rarely used) --
 CREATE INDEX IF NOT EXISTS idx_addresses_country_postal
-    ON addr.addresses (country_code, postal_code);
+    ON public.addresses (country_code, postal_code);
 
 ----------------------------------------------------------------------
 --  NOTE:  All indexes are created on the parent table; each child
@@ -83,12 +80,12 @@ CREATE INDEX IF NOT EXISTS idx_addresses_country_postal
 /*    - High-throughput COPY here, then INSERT … ON CONFLICT         */
 /*      into the partitioned base table.                             */
 /*********************************************************************/
-CREATE UNLOGGED TABLE addr.addresses_staging (LIKE addr.addresses INCLUDING ALL);
+CREATE UNLOGGED TABLE public.addresses_staging (LIKE public.addresses INCLUDING ALL);
 
 /* Example ingest cycle:
-   1) COPY addr.addresses_staging FROM '/path/file.csv' CSV;
-   2) INSERT INTO addr.addresses
-        SELECT * FROM addr.addresses_staging
+   1) COPY public.addresses_staging FROM '/path/file.csv' CSV;
+   2) INSERT INTO public.addresses
+        SELECT * FROM public.addresses_staging
         ON CONFLICT DO NOTHING;
-   3) TRUNCATE addr.addresses_staging;
+   3) TRUNCATE public.addresses_staging;
 */
