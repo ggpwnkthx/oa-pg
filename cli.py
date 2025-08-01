@@ -10,6 +10,8 @@ import os
 import sys
 from pathlib import Path
 
+import psycopg
+
 # Normalize Addresses CLI
 from normalize_addresses.cli import main as normalize_main
 
@@ -17,9 +19,9 @@ from normalize_addresses.cli import main as normalize_main
 from tiger_geocoder.config import DSN, OUTPUT_SCRIPT, OS_OVERRIDE, EXTRA_PSQL_ARGS
 from tiger_geocoder.preflight import preflight_local_tools, preflight_server
 from tiger_geocoder.loader import (
-    generate_nation_loader_script,
-    execute_loader_script,
     post_load_maintenance,
+    process_counties,
+    process_states,
 )
 
 
@@ -93,19 +95,11 @@ def main() -> None:
     elif args.cmd == "tiger":
         conn_str = args.dsn
         preflight_local_tools()
-        preflight_server(conn_str, EXTRA_PSQL_ARGS)
-        generate_nation_loader_script(
-            conn_str,
-            args.output_script,
-            args.os_override,
-            EXTRA_PSQL_ARGS,
-        )
-        execute_loader_script(args.output_script)
-        post_load_maintenance(
-            conn_str,
-            EXTRA_PSQL_ARGS,
-            analyze=args.analyze,
-        )
+        preflight_server(conn_str)
+        with psycopg.connect(conn_str) as conn:
+            process_states(conn)
+            process_counties(conn)
+            post_load_maintenance(conn)
         print("== Done ==")
 
     else:
